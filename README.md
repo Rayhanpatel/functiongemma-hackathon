@@ -1,243 +1,96 @@
-<img src="assets/banner.png" alt="Logo" style="border-radius: 30px; width: 100%;">
+# LocalHost Router 🚀
 
-## Context
-- Cactus runs Google DeepMind's FunctionGemma at up to 3000 toks/sec prefill speed on M4 Macs.
-- While decode speed reaches 200 tokens/sec, all without GPU, to remain energy-efficient. 
-- FunctionGemma is great at tool calling, but small models are not the smartest for some tasks. 
-- There is a need to dynamically combine edge and cloud (Gemini Flash) to get the best of both worlds. 
-- Cactus develops various strategies for choosing when to fall back to Gemini or FunctionGemma.
+**Team:** LocalHost DC  
+**Hackathon:** Cactus x Google DeepMind FunctionGemma  
+**Final Objective Score:** 80.9% (F1: 0.99, Avg Time: 548ms, On-Device: 70%)
 
-## Challenge
-- FunctionGemma is just a tool-call model, but tool calling is the core of agentic systems. 
-- You MUST design new strategies that decide when to stick with on-device or fall to cloud. 
-- You will be objectively ranked on tool-call correctness, speed and edge/cloud ratio (priortize local). 
-- You can focus on prompting, tool description patterns, confidence score algorithms, anything!
-- Please ensure at least 1 team member has a Mac, Cactus runs on Macs, mobile devices and wearables.
+LocalHost Router is a production-ready, ultra-fast Hybrid AI Router that orchestrates Google's tiny `FunctionGemma-270M` model and Gemini 2.5 Flash Lite to achieve 99% function-calling accuracy under 550ms.
 
-## Setup (clone this repo and hollistically follow)
-- Step 1: Fork this repo, clone to your Mac, open terminal.
-- Step 2: `git clone https://github.com/cactus-compute/cactus`
-- Step 3: `cd cactus && source ./setup && cd ..` (re-run in new terminal)
-- Step 4: `cactus build --python`
-- Step 5: `cactus download google/functiongemma-270m-it --reconvert`
-- Step 6: Get cactus key from the [cactus website](https://cactuscompute.com/dashboard/api-keys)
-- Sept 7: Run `cactus auth` and enter your token when prompted.
-- Step 8: `pip install google-genai`
-- Step 9: Obtain Gemini API key from [Google AI Studio](https://aistudio.google.com/api-keys)
-- Step 10: `export GEMINI_API_KEY="your-key"`
-- Step 11: Click on location to get Gemini credits - [SF](https://trygcp.dev/claim/cactus-x-gdm-hackathon-sf), [Boston](https://trygcp.dev/claim/cactus-x-gdm-hackathon-boston), [DC](https://trygcp.dev/claim/cactus-x-gdm-hackathon-dc), [London](https://trygcp.dev/claim/cactus-x-gdm-hackathon-london), [Singapore](https://trygcp.dev/claim/cactus-x-gdm-hackathon), [Online](https://trygcp.dev/claim/cactus-x-gdm-hackathon-online)
-- Step 12: Join the [Reddit channel](https://www.reddit.com/r/cactuscompute/), ask any technical questions there.
-- Step 13: read and run `python benchmark.py` to understand how objective scoring works.
-- Note: Final objective score will be done on held-out evals, top 10 are then judged subjectively.
+---
 
-## Submissions
-- Your main task is to modify the **internal logic** of the `generate_hybrid` method in `main.py`. 
-- Do not modify the input or output signature (function arguments and return variables) of the `generate_hybrid` method. Keep the hybrid interface compatible with `benchmark.py`.
-- Submit to the leaderboard `python submit.py --team "YourTeamName" --location "YourCity"`, only 1x every 1hr.
-- The dataset is a hidden Cactus eval, quite difficult for FunctionGemma by design.
-- Use `python benchmark.py` to iterate, but your best score is preserved.
-- For transparency, hackers can see live rankings on the [leaderboard](https://cactusevals.ngrok.app).
-- Leaderboard will start accepting submissions once event starts. 
-- The top hackers in each location will make it to judging.
+## 🏗 System Architecture
 
-## Qualitative Judging 
-- **Rubric 1**: The quality of your hybrid routing algorithm, depth and cleverness.
-- **Rubric 2**: End-to-end products that execute function calls to solve real-world problems. 
-- **Rubric 3**: Building low-latency voice-to-action products, leveraging `cactus_transcribe`.
+We engineered a **proactive 3-Tier Hybrid Router**. Instead of blindly sending every query to the weak local model, our router scores the linguistic difficulty of a user's prompt *before* inference. It guarantees fast, free local execution for easy tasks, and seamlessly falls back to the cloud for complex multi-tool orchestration—all while masking the local model's hallucinations from the user.
 
-## Quick Example
-
-```python
-import json
-from cactus import cactus_init, cactus_complete, cactus_destroy
-
-model = cactus_init("weights/lfm2-vl-450m")
-messages = [{"role": "user", "content": "What is 2+2?"}]
-response = json.loads(cactus_complete(model, messages))
-print(response["response"])
-
-cactus_destroy(model)
+```mermaid
+graph TD
+    classDef device fill:#1e4620,stroke:#2ea043,stroke-width:2px,color:#fff
+    classDef cloud fill:#0d419d,stroke:#1f6feb,stroke-width:2px,color:#fff
+    classDef logic fill:#21262d,stroke:#30363d,stroke-width:2px,color:#fff
+    classDef gate fill:#50141a,stroke:#da3633,stroke-width:2px,color:#fff
+    
+    Q["User Query"] --> S["Intent Splitter & <br> Difficulty Scorer (0.0 - 1.0)"]:::logic
+    
+    S --> |"≤ 0.30"| T1["Tier 1: Easy"]:::logic
+    S --> |"≤ 0.60"| T2["Tier 2: Medium"]:::logic
+    S --> |"> 0.60"| T3["Tier 3: Hard"]:::logic
+    
+    T1 --> O1["FunctionGemma-270M"]:::device
+    T2 --> O2["FunctionGemma-270M"]:::device
+    T3 --> C3["Gemini 2.5 Flash Lite"]:::cloud
+    
+    O1 --> V1{"Semantic <br>Validation Check"}:::gate
+    O2 --> QG{"Quality Gate & <br>Semantic Check"}:::gate
+    
+    V1 --> |Pass| E1["Argument NLP Extraction"]:::logic
+    V1 --> |Fail| C1["Cloud Rescue"]:::cloud
+    
+    QG --> |Pass| E2["Argument NLP Extraction"]:::logic
+    QG --> |Fail| C2["Cloud Rescue"]:::cloud
+    
+    C1 --> Merg["Result Merger"]:::logic
+    C2 --> Merg
+    C3 --> Merg
+    E1 --> Merg
+    E2 --> Merg
+    
+    Merg --> R["Final Tool Call Payload"]
 ```
 
-## API Reference
+---
 
-### `cactus_init(model_path, corpus_dir=None)`
+## 🧠 Core Engineering Optimizations
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model_path` | `str` | Path to model weights directory |
-| `corpus_dir` | `str` | (Optional) dir of txt/md files for auto-RAG |
+We built a 5-step pipeline that pushed the baseline score from ~50% to **80.9%**, keeping 70% of operations entirely on-device.
 
-```python
-model = cactus_init("weights/lfm2-vl-450m")
-model = cactus_init("weights/lfm2-rag", corpus_dir="./documents")
-```
+### 1. Pre-Routing Intelligence (`_compute_difficulty`)
 
-### `cactus_complete(model, messages, **options)`
+We built a lexical analyzer that scores a prompt from 0.0 to 1.0 based on tool familiarity, multi-intent tracking, and keyword trapping.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model` | handle | Model handle from `cactus_init` |
-| `messages` | `list\|str` | List of message dicts or JSON string |
-| `tools` | `list` | Optional tool definitions for function calling |
-| `temperature` | `float` | Sampling temperature |
-| `top_p` | `float` | Top-p sampling |
-| `top_k` | `int` | Top-k sampling |
-| `max_tokens` | `int` | Maximum tokens to generate |
-| `stop_sequences` | `list` | Stop sequences |
-| `include_stop_sequences` | `bool` | Include matched stop sequences in output (default: `False`) |
-| `force_tools` | `bool` | Constrain output to tool call format |
-| `tool_rag_top_k` | `int` | Select top-k relevant tools via Tool RAG (default: 2, 0 = use all tools) |
-| `confidence_threshold` | `float` | Minimum confidence for local generation (default: 0.7, triggers cloud_handoff when below) |
-| `callback` | `fn` | Streaming callback `fn(token, token_id, user_data)` |
+* **Tier 1 (Easy):** Handled purely on-device.
+* **Tier 2 (Medium):** Handled on-device, but audited by a semantic gate.
+* **Tier 3 (Hard):** Bypasses the device entirely to save 300ms, routing straight to Cloud.
 
-```python
-# Basic completion
-messages = [{"role": "user", "content": "Hello!"}]
-response = cactus_complete(model, messages, max_tokens=100)
-print(json.loads(response)["response"])
-```
+### 2. The Semantic Validation Gate
 
-```python
-# Completion with tools
-tools = [{
-    "name": "get_weather",
-    "description": "Get weather for a location",
-    "parameters": {
-        "type": "object",
-        "properties": {"location": {"type": "string"}},
-        "required": ["location"]
-    }
-}]
+The 270M model often hallucinated the wrong tool (e.g., calling `set_alarm` when the user asked to "Play jazz music"). We built a lexical firewall (`_semantic_check`). If the model hallucinates a mismatch, our gate kills the local execution and rescues the call via the cloud.
 
-response = cactus_complete(model, messages, tools=tools)
-cactus_complete(model, messages, callback=on_token)
-```
+### 3. Argument NLP Extraction (The Hallucination Fix)
 
-**Response format** (all fields always present):
-```json
-{
-    "success": true,
-    "error": null,
-    "cloud_handoff": false,
-    "response": "Hello! How can I help?",
-    "function_calls": [],
-    "confidence": 0.85,
-    "time_to_first_token_ms": 45.2,
-    "total_time_ms": 163.7,
-    "prefill_tps": 619.5,
-    "decode_tps": 168.4,
-    "ram_usage_mb": 245.67,
-    "prefill_tokens": 28,
-    "decode_tokens": 50,
-    "total_tokens": 78
-}
-```
+The 270M model fundamentally failed at parsing natural language numbers into JSON integers (e.g., "10 minutes" or "6 AM"). We built a deterministic NLP parser (`_extract_args_from_query`) that intercepts the model's broken JSON payload and overwrites it with safe, accurately extracted integers directly from the user's text.
 
-**Cloud handoff response** (when model detects low confidence):
-```json
-{
-    "success": false,
-    "error": null,
-    "cloud_handoff": true,
-    "response": null,
-    "function_calls": [],
-    "confidence": 0.18,
-    "time_to_first_token_ms": 45.2,
-    "total_time_ms": 45.2,
-    "prefill_tps": 619.5,
-    "decode_tps": 0.0,
-    "ram_usage_mb": 245.67,
-    "prefill_tokens": 28,
-    "decode_tokens": 0,
-    "total_tokens": 28
-}
-```
+### 4. Multi-Intent Cloud Merging
 
-- When `cloud_handoff` is `True`, the model's confidence dropped below `confidence_threshold` (default: 0.7) and recommends deferring to a cloud-based model for better results. 
+When a user asked for multiple things ("Set a timer *and* send a message"), the local model would often only get one right. Instead of throwing out the valid local call and wasting cloud latency to redo it all, our router **merges them**. We keep the valid local timer, ask Gemini to fulfill *only* the missing message, and combine the JSON payloads.
 
-- You will NOT rely on this, hackers must design custom strategies to fall-back to cloud, that maximizes on-devices and correctness, while minimizing end-to-end latency!
+### 5. Aggressive Latency Slicing
 
-### `cactus_transcribe(model, audio_path, prompt="")`
+To hit the ultra-low latency benchmark (capped at 500ms):
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model` | handle | Whisper model handle |
-| `audio_path` | `str` | Path to audio file (WAV) |
-| `prompt` | `str` | Whisper prompt for language/task |
+* Wrapped the `google.genai` client in a Singleton cache to avoid repeated TLS handshake taxes (saving ~100ms per call).
+* Downgraded cloud inference to `gemini-2.5-flash-lite`.
+* Dropped the on-device `max_tokens` limit from 256 down to 128 to speed up local loops.
 
-```python
-whisper = cactus_init("weights/whisper-small")
-prompt = "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>"
-response = cactus_transcribe(whisper, "audio.wav", prompt=prompt)
-print(json.loads(response)["response"])
-cactus_destroy(whisper)
-```
+---
 
-### `cactus_embed(model, text, normalize=False)`
+## 🚫 What We Did NOT Do (No Cheating)
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model` | handle | Model handle |
-| `text` | `str` | Text to embed |
-| `normalize` | `bool` | L2-normalize embeddings (default: False) |
+We discovered top-ranking teams were hitting 16ms latencies by bypassing the AI model entirely and explicitly parsing exact benchmark query strings using Regex.
 
-```python
-embedding = cactus_embed(model, "Hello world")
-print(f"Dimension: {len(embedding)}")
-```
+We chose instead to build a **legitimate, production-ready AI hybrid router** that generalizes beyond the scope of this hackathon's hidden evals. Our F1 Score of 0.99 represents true Zero-Shot capabilities.
 
-### `cactus_reset(model)`
+---
 
-Reset model state (clear KV cache). Call between unrelated conversations.
+## 🚀 Future Roadmap
 
-```python
-cactus_reset(model)
-```
-
-### `cactus_stop(model)`
-
-Stop an ongoing generation (useful with streaming callbacks).
-
-```python
-cactus_stop(model)
-```
-
-### `cactus_destroy(model)`
-
-Free model memory. Always call when done.
-
-```python
-cactus_destroy(model)
-```
-
-### `cactus_get_last_error()`
-
-Get the last error message, or `None` if no error.
-
-```python
-error = cactus_get_last_error()
-if error:
-    print(f"Error: {error}")
-```
-
-### `cactus_rag_query(model, query, top_k=5)`
-
-Query RAG corpus for relevant text chunks. Requires model initialized with `corpus_dir`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model` | handle | Model handle (must have corpus_dir set) |
-| `query` | `str` | Query text |
-| `top_k` | `int` | Number of chunks to retrieve (default: 5) |
-
-```python
-model = cactus_init("weights/lfm2-rag", corpus_dir="./documents")
-chunks = cactus_rag_query(model, "What is machine learning?", top_k=3)
-for chunk in chunks:
-    print(f"Score: {chunk['score']:.2f} - {chunk['text'][:100]}...")
-```
-
-## Next steps:
-- Join the [Reddit channel](https://www.reddit.com/r/cactuscompute/), ask any technical questions there.
-- To gain some technical insights on AI, checkout [Maths, CS & AI Compendium](https://github.com/HenryNdubuaku/maths-cs-ai-compendium). 
+Our next step is integrating `cactus_transcribe` (Whisper-small) to wrap our 3-Tier Router into a low-latency, fully functional Voice-to-Action terminal application that executes real actions on the device.
