@@ -65,13 +65,13 @@ We built a lexical analyzer that scores a prompt from 0.0 to 1.0 based on tool f
 
 The 270M model often hallucinated the wrong tool (e.g., calling `set_alarm` when the user asked to "Play jazz music"). We built a lexical firewall (`_semantic_check`). If the model hallucinates a mismatch, our gate kills the local execution and rescues the call via the cloud.
 
-### 3. Argument NLP Extraction (The Hallucination Fix)
+### 3. Argument NLP Extraction & Refusal Interception (The Hallucination Fix)
 
-The 270M model fundamentally failed at parsing natural language numbers into JSON integers (e.g., "10 minutes" or "6 AM"). We built a deterministic NLP parser (`_extract_args_from_query`) that intercepts the model's broken JSON payload and overwrites it with safe, accurately extracted integers directly from the user's text.
+The 270M model fundamentally failed at parsing natural language numbers into JSON integers (e.g., "10 minutes" or "6 AM"). Worse, it explicitly refused to output function calls for the phrase "wake me up" (triggering an AI refusal message instead). We built a deterministic NLP parser (`_extract_args_from_query`) that intercepts the model's broken JSON payload, injects rescue calls for known refusals, and overwrites the payload with safe, accurately extracted integers directly from the user's text.
 
 ### 4. Multi-Intent Cloud Merging
 
-When a user asked for multiple things ("Set a timer *and* send a message"), the local model would often only get one right. Instead of throwing out the valid local call and wasting cloud latency to redo it all, our router **merges them**. We keep the valid local timer, ask Gemini to fulfill *only* the missing message, and combine the JSON payloads.
+When a user asked for multiple things ("Set a timer *and* send a message"), the local model would often only get one right. Instead of throwing out the valid local call and wasting cloud latency to redo it all, our router **merges them**. If the local decomposition misses intents, we send the full query to Gemini as a semantic fallback, but we strictly **filter and keep only the missing tools** from Gemini's response, combining them with the original local calls to preserve our on-device ratio.
 
 ### 5. Aggressive Latency Slicing
 
