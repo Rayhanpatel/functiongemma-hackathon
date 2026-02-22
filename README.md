@@ -16,6 +16,12 @@ We built a routing layer that decides *before inference* whether each query can 
 
 ---
 
+## Built On This
+
+The hybrid on-device/cloud routing pattern from this project was reused in [**PathGuard**](https://github.com/Rayhanpatel/PathGuard) — an on-device spatial safety system for construction workers, built at the UMD × Ironsite Hackathon 2026. PathGuard applies the same confidence-gated local → cloud fallback architecture to a completely different domain: real-time corridor-based hazard detection with an on-device vision-language model (LFM2.5-VL-1.6B via Cactus) and Gemini cloud rescue. The core idea — run cheap/local first, escalate only when quality drops below a threshold, cap cloud costs with a cooldown timer — transferred directly.
+
+---
+
 ## Architecture
 
 ```mermaid
