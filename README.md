@@ -1,16 +1,22 @@
-# LocalHost Router 🚀
+# LocalHost Router
 
-**Team:** LocalHost DC  
-**Hackathon:** Cactus x Google DeepMind FunctionGemma  
-**Final Objective Score:** 80.9% (F1: 0.99, Avg Time: 548ms, On-Device: 70%)
+**Team:** LocalHost DC
+**Hackathon:** Cactus Compute × Google DeepMind FunctionGemma
+**Final Score:** 80.9% — F1: 0.99 · Avg Latency: 548ms · On-Device: 70%
 
-LocalHost Router is a production-ready, ultra-fast Hybrid AI Router that orchestrates Google's tiny `FunctionGemma-270M` model and Gemini 2.5 Flash Lite to achieve 99% function-calling accuracy under 550ms.
+A hybrid AI router that orchestrates Google's FunctionGemma-270M on-device model alongside Gemini 2.5 Flash Lite to achieve 99% function-calling accuracy under 550ms across 30 benchmark cases.
 
 ---
 
-## 🏗 System Architecture
+## The Problem
 
-We engineered a **proactive 3-Tier Hybrid Router**. Instead of blindly sending every query to the weak local model, our router scores the linguistic difficulty of a user's prompt *before* inference. It guarantees fast, free local execution for easy tasks, and seamlessly falls back to the cloud for complex multi-tool orchestration—all while masking the local model's hallucinations from the user.
+Cloud-only function calling is slow and expensive for simple tasks like setting alarms. Tiny on-device models (270M parameters) are fast and free but structurally broken: they hallucinate wrong tools, fail to parse numbers into JSON, refuse valid prompts, and collapse on multi-intent commands.
+
+We built a routing layer that decides *before inference* whether each query can be handled locally or needs the cloud — and fixes the local model's outputs when they're partially correct.
+
+---
+
+## Architecture
 
 ```mermaid
 graph TD
@@ -18,79 +24,241 @@ graph TD
     classDef cloud fill:#0d419d,stroke:#1f6feb,stroke-width:2px,color:#fff
     classDef logic fill:#21262d,stroke:#30363d,stroke-width:2px,color:#fff
     classDef gate fill:#50141a,stroke:#da3633,stroke-width:2px,color:#fff
-    
-    Q["User Query"] --> S["Intent Splitter & <br> Difficulty Scorer (0.0 - 1.0)"]:::logic
-    
-    S --> |"≤ 0.30"| T1["Tier 1: Easy"]:::logic
-    S --> |"≤ 0.60"| T2["Tier 2: Medium"]:::logic
-    S --> |"> 0.60"| T3["Tier 3: Hard"]:::logic
-    
-    T1 --> O1["FunctionGemma-270M"]:::device
-    T2 --> O2["FunctionGemma-270M"]:::device
-    T3 --> C3["Gemini 2.5 Flash Lite"]:::cloud
-    
-    O1 --> V1{"Semantic <br>Validation Check"}:::gate
-    O2 --> QG{"Quality Gate & <br>Semantic Check"}:::gate
-    
-    V1 --> |Pass| E1["Argument NLP Extraction"]:::logic
-    V1 --> |Fail| C1["Cloud Rescue"]:::cloud
-    
-    QG --> |Pass| E2["Argument NLP Extraction"]:::logic
-    QG --> |Fail| C2["Cloud Rescue"]:::cloud
-    
-    C1 --> Merg["Result Merger"]:::logic
-    C2 --> Merg
-    C3 --> Merg
-    E1 --> Merg
-    E2 --> Merg
-    
-    Merg --> R["Final Tool Call Payload"]
+    classDef pp fill:#3d2b00,stroke:#d29922,stroke-width:2px,color:#fff
+
+    Q["User Query"] --> SP["Intent Splitter<br><code>_split_intents</code>"]:::logic
+    SP --> |"Single Intent"| SC["Difficulty Scorer (0.0–1.0)<br><code>_compute_difficulty</code>"]:::logic
+    SP --> |"Multi-Intent"| MI["Per-Sub-Intent Routing<br>+ Gap-Fill Merger"]:::logic
+
+    SC --> |"≤ 0.30"| T1["Tier 1: Easy"]:::logic
+    SC --> |"≤ 0.60"| T2["Tier 2: Medium"]:::logic
+    SC --> |"> 0.60"| T3["Tier 3: Hard"]:::logic
+
+    T1 --> D1["FunctionGemma-270M<br>(try RAG=min(2,n), retry RAG=1)"]:::device
+    T2 --> D2["FunctionGemma-270M<br>(RAG = min(2, tool count))"]:::device
+    T3 --> C3["Gemini 2.5 Flash Lite<br>+ Post-Processing"]:::cloud
+
+    D1 --> PP1["Post-Processing Pipeline<br>(fuzzy match → types → cleanup → NLP extraction)"]:::pp
+    D2 --> PP2["Post-Processing Pipeline"]:::pp
+
+    PP1 --> V1{"Structural Validation<br>+ Semantic Check"}:::gate
+    PP2 --> QG{"Quality Gate + Structural Validation<br>(refusals + empty args + semantics + required params)"}:::gate
+
+    V1 --> |"Pass"| R["Final Tool Call Payload"]
+    V1 --> |"Fail"| CR1["Cloud Rescue<br>+ Post-Processing"]:::cloud
+    QG --> |"Pass"| R
+    QG --> |"Fail"| CR2["Cloud Rescue<br>+ Post-Processing"]:::cloud
+
+    CR1 --> R
+    CR2 --> R
+    C3 --> R
+    MI --> R
 ```
 
 ---
 
-## 🧠 Core Engineering Optimizations
+## How It Works
 
-We built a 5-step pipeline that pushed the baseline score from ~50% to **80.9%**, keeping 70% of operations entirely on-device.
+### 1. Intent Splitting (`_split_intents`)
 
-### 1. Pre-Routing Intelligence (`_compute_difficulty`)
+Compound queries like *"Set a timer and send a message"* are split at conjunctions (`and`, `also`, `then`) and commas into individual sub-intents. Each sub-intent is independently scored and routed through the tier system.
 
-We built a lexical analyzer that scores a prompt from 0.0 to 1.0 based on tool familiarity, multi-intent tracking, and keyword trapping.
+### 2. Pre-Routing Difficulty Scorer (`_compute_difficulty`)
 
-* **Tier 1 (Easy):** Handled purely on-device.
-* **Tier 2 (Medium):** Handled on-device, but audited by a semantic gate.
-* **Tier 3 (Hard):** Bypasses the device entirely to save 300ms, routing straight to Cloud.
+Before any model inference, a lexical analyzer scores each query from 0.0 to 1.0 across four weighted factors:
 
-### 2. The Semantic Validation Gate
+| Factor | Weight | What It Measures |
+|---|---|---|
+| Tool Familiarity | 0.0–0.5 | Ratio of tools the 270M model consistently fails on (`send_message`, `search_contacts`, `create_reminder`) |
+| Keyword Signals | 0 or 0.4 | Whether query language ("send", "find", "remind") triggers a known-hard tool that is present in the tool set |
+| Intent Count | 0.0–0.3 | Penalty of 0.15 per additional intent |
+| Tool Count | 0.0–0.2 | Penalty of 0.05 per additional distractor tool |
 
-The 270M model often hallucinated the wrong tool (e.g., calling `set_alarm` when the user asked to "Play jazz music"). We built a lexical firewall (`_semantic_check`). If the model hallucinates a mismatch, our gate kills the local execution and rescues the call via the cloud.
+The score determines the routing tier:
 
-### 3. Argument NLP Extraction & Refusal Interception (The Hallucination Fix)
+- **Tier 1 (≤ 0.3):** On-device with semantic validation. If the first attempt (RAG = min(2, tool count)) fails, retries with narrower tool selection (RAG=1). Falls back to cloud only after two local failures.
+- **Tier 2 (0.3–0.6):** On-device with a full quality gate (refusal detection + argument validation + semantic check). Single attempt before cloud rescue.
+- **Tier 3 (> 0.6):** Cloud-first. Skips the local model entirely. Falls back to on-device only if the cloud fails.
 
-The 270M model fundamentally failed at parsing natural language numbers into JSON integers (e.g., "10 minutes" or "6 AM"). Worse, it explicitly refused to output function calls for the phrase "wake me up" (triggering an AI refusal message instead). We built a deterministic NLP parser (`_extract_args_from_query`) that intercepts the model's broken JSON payload, injects rescue calls for known refusals, and overwrites the payload with safe, accurately extracted integers directly from the user's text.
+### 3. Post-Processing Pipeline (inside every inference call)
 
-### 4. Multi-Intent Cloud Merging
+Every result — both on-device and cloud — passes through a four-stage cleanup pipeline **inside** `generate_cactus` and `generate_cloud`, *before* any validation gates run. This means the validation gates always operate on cleaned, normalized outputs.
 
-When a user asked for multiple things ("Set a timer *and* send a message"), the local model would often only get one right. Instead of throwing out the valid local call and wasting cloud latency to redo it all, our router **merges them**. If the local decomposition misses intents, we send the full query to Gemini as a semantic fallback, but we strictly **filter and keep only the missing tools** from Gemini's response, combining them with the original local calls to preserve our on-device ratio.
+**Fuzzy Tool Name Matching** (`_fuzzy_match_schema`): If the model outputs a slightly misspelled tool name, Levenshtein distance snaps it to the closest valid tool within edit distance 4.
 
-### 5. Aggressive Latency Slicing
+**Type Coercion & Clamping** (`_fix_types`): Forces `float → int` conversion for integer schema fields. Clamps negative hallucinations (the model outputs values like `minutes=-300`) to their absolute value. Snaps misspelled enum values to the nearest valid option via Levenshtein distance (within edit distance 3).
 
-To hit the ultra-low latency benchmark (capped at 500ms):
+**String Cleanup** (`_clean_args`): Strips trailing punctuation, leading articles ("the", "a", "an"), and stray quotes from string arguments.
 
-* Wrapped the `google.genai` client in a Singleton cache to avoid repeated TLS handshake taxes (saving ~100ms per call).
-* Downgraded cloud inference to `gemini-2.5-flash-lite`.
-* Dropped the on-device `max_tokens` limit from 256 down to 128 to speed up local loops.
+**NLP Argument Extraction** (`_extract_args_from_query`): The critical fix. The 270M model fundamentally cannot parse natural language numbers into JSON integers. This regex-based extractor pulls correct values directly from the user's text and overwrites the model's broken output:
+- `"6 AM"` → `{"hour": 6, "minute": 0}`
+- `"7:30 PM"` → `{"hour": 19, "minute": 30}`
+- `"10 minutes"` → `{"minutes": 10}`
+
+It also handles **refusal interception**: if the model outputs zero calls but the query contains "wake", a synthetic `set_alarm` call is injected so the argument parser can rescue the response.
+
+### 4. Semantic Validation Gate (`_semantic_check`)
+
+After post-processing, the routing layer validates tool selection. A keyword-to-tool mapping catches the 270M model's most dangerous failure mode: confidently selecting the wrong tool.
+
+If the user says *"Play jazz music"* but the model selects `set_alarm`, the gate detects that "play" and "music" map to `play_music`, not `set_alarm`. It confirms another tool is a better match and kills the hallucinated result, triggering a cloud rescue.
+
+### 5. Quality Gate (`_quality_gate`)
+
+A broader post-inference check used at Tier 2 that layers four validations on the already-post-processed output:
+
+- **Empty calls** — the model returned nothing
+- **Refusal detection** — the model output phrases like "I cannot", "I apologize", or "which song" instead of making a tool call
+- **Argument value check** — any present argument value is `None` or an empty string (catches the model calling the right tool but filling in garbage)
+- **Semantic check** — delegates to `_semantic_check` as the final layer
+
+### 6. Structural Validation (`_validate_calls`)
+
+A separate check that runs alongside the semantic and quality gates. It verifies two things: (1) the tool name actually exists in the provided schema, and (2) all required parameters declared in the schema are present in the arguments dict. This catches cases where the model hallucinates a tool name that fuzzy matching couldn't fix, or where it calls the right tool but omits a required field entirely.
+
+### 7. Multi-Intent Gap-Fill Merging
+
+For multi-intent queries, each sub-intent is independently routed through the 3-tier system. If the decomposition misses intents (e.g., the local model only handles one of two requested tools), the system sends the full original query to Gemini as a fallback — but strictly filters its response to keep only the missing tools, merging them with the successful local calls.
+
+This preserves the on-device ratio while ensuring complete coverage.
+
+### 8. Infrastructure Optimizations
+
+**Persistent Model Handle** (`_get_model`): The FunctionGemma-270M model is loaded once into RAM and reused across all calls via a lazy-init singleton.
+
+**Cached Cloud Client** (`_get_cloud_client`): The `google.genai` client is wrapped in a singleton that reuses TCP connections, avoiding repeated TLS handshake overhead on cloud calls.
+
+**Model Selection:** Cloud inference uses `gemini-2.5-flash-lite` — the fastest available Gemini model.
+
+**Token Budget:** On-device generation is capped at `max_tokens=128` to minimize local inference time.
+
+**Robust JSON Parsing:** When `json.loads` fails on malformed model output, a depth-tracking brace parser extracts the first complete JSON object from the raw string.
 
 ---
 
-## 🚫 What We Did NOT Do (No Cheating)
+## Scoring
 
-We discovered top-ranking teams were hitting 16ms latencies by bypassing the AI model entirely and explicitly parsing exact benchmark query strings using Regex.
+The benchmark uses a weighted formula:
 
-We chose instead to build a **legitimate, production-ready AI hybrid router** that generalizes beyond the scope of this hackathon's hidden evals. Our F1 Score of 0.99 represents true Zero-Shot capabilities.
+```
+level_score = (0.60 × F1) + (0.15 × time_score) + (0.25 × on_device_ratio)
+total_score = (0.20 × easy) + (0.30 × medium) + (0.50 × hard)
+```
+
+Where `time_score = max(0, 1 - avg_time / 500ms)`. Anything under 500ms gets full time marks; anything over is penalized linearly.
+
+Hard queries (multi-intent, 4–5 distractor tools) are worth **50% of the total score** — making the hard-difficulty F1 jump from 0.50 → 0.97 the single biggest driver of our result.
 
 ---
 
-## 🚀 Future Roadmap
+## Results
 
-Our next step is integrating `cactus_transcribe` (Whisper-small) to wrap our 3-Tier Router into a low-latency, fully functional Voice-to-Action terminal application that executes real actions on the device.
+| Difficulty | Queries | F1 | Strategy |
+|---|---|---|---|
+| Easy | 10 | ~1.00 | Tier 1 on-device with semantic check |
+| Medium | 10 | ~1.00 | Tier 2 on-device with quality gate + cloud rescue |
+| Hard | 10 | ~0.97 | Per-sub-intent routing + gap-fill merging |
+| **Overall** | **30** | **0.99** | **70% on-device · 548ms avg latency** |
+
+**Final Objective Score: 80.9%**
+
+---
+
+## What We Did Not Do
+
+We observed top-ranking teams achieving 16ms latencies by hardcoding regex matches against exact benchmark query strings — effectively bypassing the AI model entirely.
+
+We built a generalizable zero-shot system. Our 0.99 F1 score comes from algorithmic routing and post-processing, not memorization of the eval set.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- [Cactus SDK](https://github.com/cactus-compute/cactus) (built with Python bindings)
+- FunctionGemma-270M-it weights (placed in `cactus/weights/functiongemma-270m-it/`)
+- Gemini API key
+
+### Setup
+
+```bash
+# Clone the repo
+git clone https://github.com/your-username/localhost-router.git
+cd localhost-router
+
+# Clone and build Cactus
+git clone https://github.com/cactus-compute/cactus
+cd cactus && source ./setup && cd ..
+cactus build --python
+
+# Download model weights
+cactus pull functiongemma-270m-it
+
+# Configure environment
+echo 'GEMINI_API_KEY=your_key_here' > .env
+
+# Install cloud dependency
+pip install google-genai
+```
+
+### Run
+
+```bash
+# Run the full 30-case benchmark
+python benchmark.py
+
+# Submit to the hackathon leaderboard
+python submit.py --team "YourTeamName" --location "DC"
+```
+
+---
+
+## Project Structure
+
+```
+├── main.py           # Core hybrid router (688 lines)
+│   ├── generate_hybrid()         # Entry point — 3-tier routing orchestrator
+│   ├── generate_cactus()         # On-device inference via Cactus SDK
+│   ├── generate_cloud()          # Cloud inference via Gemini API
+│   ├── _compute_difficulty()     # Pre-routing difficulty scorer
+│   ├── _semantic_check()         # Tool-selection hallucination detector
+│   ├── _quality_gate()           # Post-inference quality validation
+│   ├── _validate_calls()         # Structural validity check (name + required params)
+│   ├── _split_intents()          # Multi-intent query decomposition
+│   ├── _extract_args_from_query()# NLP argument extraction + refusal rescue
+│   ├── _fuzzy_match_schema()     # Full post-processing pipeline orchestrator
+│   ├── _fix_types()              # Type coercion + negative clamping + enum snapping
+│   ├── _clean_args()             # String normalization
+│   ├── _levenshtein()            # Edit distance for fuzzy matching
+│   ├── _get_model()              # Persistent on-device model singleton
+│   ├── _get_cloud_client()       # Persistent Gemini client singleton
+│   └── _load_env()               # .env file loader
+├── benchmark.py      # 30-case evaluation suite with F1 scoring
+├── submit.py         # Leaderboard submission client
+└── .env              # API keys (not committed)
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| On-Device Model | FunctionGemma-270M-it via Cactus SDK |
+| Cloud Model | Gemini 2.5 Flash Lite via `google-genai` |
+| Language | Python 3.10+ |
+| On-Device Runtime | [Cactus Compute](https://github.com/cactus-compute/cactus) |
+
+---
+
+## Future
+
+Integrating `cactus_transcribe` (Whisper-small) to build a voice-to-action terminal — spoken commands routed through the 3-tier system and executed as real device actions.
+
+---
+
+## Team
+
+**LocalHost DC** — Built at the Cactus Compute × Google DeepMind FunctionGemma Hackathon (AI Tinkerers, Washington DC).
